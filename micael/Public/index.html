@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Michael</title>
+<style>
+  :root { --hue: 190; --accent: hsl(var(--hue) 100% 62%); }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body { background: #04050a; color: #e8f1ff; font-family: "Segoe UI", system-ui, -apple-system, sans-serif; overflow: hidden; }
+  main { width: 100%; height: 100%; position: relative; }
+  #visual { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #caption {
+    position: absolute; z-index: 2; left: 50%; bottom: 150px; transform: translate(-50%, 6px);
+    width: min(560px, calc(100% - 48px)); text-align: center; font-size: 1.15rem; line-height: 1.5; font-weight: 500;
+    color: hsl(var(--hue) 100% 85%); text-shadow: 0 0 18px hsl(var(--hue) 100% 60% / 0.6);
+    opacity: 0; transition: opacity .5s ease, transform .5s ease;
+  }
+  #caption.show { opacity: 1; transform: translate(-50%, 0); }
+  #micBtn {
+    position: absolute; z-index: 2; bottom: 38px; left: 50%; margin-left: -29px;
+    width: 58px; height: 58px; border-radius: 50%; border: 1px solid hsl(var(--hue) 100% 62% / 0.5);
+    background: hsl(var(--hue) 100% 62% / 0.15); color: #e8f1ff; cursor: pointer; font-size: 1.35rem;
+  }
+  #micBtn[aria-pressed="true"] { background: var(--accent); color: #04121a; box-shadow: 0 0 24px hsl(var(--hue) 100% 60% / 0.6); }
+  #micBtn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+  #hint { position: absolute; z-index: 2; bottom: 12px; left: 0; right: 0; text-align: center; color: #7f8ea8; font-size: .75rem; }
+  #loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #7f8ea8; z-index: 3; text-align: center; padding: 24px; }
+  @media (prefers-reduced-motion: reduce) { #caption { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <canvas id="visual" aria-hidden="true"></canvas>
+  <div id="loading">Waking Michael…</div>
+  <p id="caption" aria-live="polite"></p>
+  <button id="micBtn" aria-pressed="false" aria-label="Turn always-listening on or off">&#127908;</button>
+  <span id="hint">Tap once, then just talk to Michael</span>
+</main>
+
+<script type="importmap">{ "imports": { "three": "/vendor/three/three.module.js" } }</script>
+<script type="module">
+import * as THREE from "three";
+
+let state = "idle";            // idle | listening | thinking | speaking
+let hue = 190, faceMode = false, mouthLevel = 0, energy = 0;
+const root = document.documentElement;
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const setState = (s) => { state = s; };
+
+// ---------- Caption ----------
+const captionEl = document.getElementById("caption");
+let captionTimer;
+function showCaption(text) {
+  clearTimeout(captionTimer);
+  captionEl.textContent = text;
+  captionEl.classList.add("show");
+  captionTimer = setTimeout(() => captionEl.classList.remove("show"), Math.max(3000, text.length * 75));
+}
+
+// ---------- 3D scene ----------
+const canvas = document.getElementById("visual");
+const loading = document.getElementById("loading");
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+} catch (e) {
+  loading.textContent = "Your browser can't show 3D graphics. Try Chrome or Edge. Voice will still work.";
+}
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+camera.position.set(0, 0.3, 8);
+scene.add(new THREE.AmbientLight(0x2a3550, 1.2));
+const key = new THREE.PointLight(0x8fe3ff, 22, 24, 2); key.position.set(3, 3, 5); scene.add(key);
+const rim = new THREE.PointLight(0xffffff, 8, 24, 2); rim.position.set(-4, -1, -4); scene.add(rim);
+
+// Dark glossy floor that catches Michael's colored light
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(16, 64),
+  new THREE.MeshStandardMaterial({ color: 0x07090f, roughness: 0.22, metalness: 0.7 })
+);
+floor.rotation.x = -Math.PI / 2; floor.position.y = -2.9; scene.add(floor);
+
+// Orb layout and face layout for the same set of points (group: 0 shell, 1 eye, 2 mouth)
+const COUNT = 2800, golden = Math.PI * (3 - Math.sqrt(5));
+const orbP = new Float32Array(COUNT * 3), faceP = new Float32Array(COUNT * 3);
+const group = new Uint8Array(COUNT), phase = new Float32Array(COUNT);
+for (let i = 0; i < COUNT; i++) {
+  const y = 1 - (i / (COUNT - 1)) * 2, r = Math.sqrt(1 - y * y), t = golden * i;
+  orbP.set([Math.cos(t) * r * 2.1, y * 2.1, Math.sin(t) * r * 2.1], i * 3);
+  phase[i] = Math.random() * 6.283;
+  const roll = Math.random();
+  let x, yy, z;
+  if (roll < 0.14) {
+    group[i] = 1; const side = i % 2 ? 1 : -1, a = Math.random() * 6.283, rr = Math.sqrt(Math.random()) * 0.4;
+    x = side * 0.95 + Math.cos(a) * rr; yy = 0.35 + Math.sin(a) * rr * 0.75; z = 1.95;
+  } else if (roll < 0.3) {
+    group[i] = 2; const a = Math.PI * (0.12 + Math.random() * 0.76);
+    x = Math.cos(a) * 1.4; yy = -0.8 - Math.sin(a) * 0.5; z = 1.9;
+  } else {
+    const v = 1 - Math.random() * 2, rr = Math.sqrt(1 - v * v), u = Math.random() * 6.283;
+    x = Math.cos(u) * rr * 2.3; yy = v * 2.3; z = Math.sin(u) * rr * 2.3 - 0.3;
+  }
+  faceP.set([x, yy, z], i * 3);
+}
+const geo = new THREE.BufferGeometry();
+geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(COUNT * 3), 3));
+geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(COUNT * 3), 3));
+const points = new THREE.Points(geo, new THREE.PointsMaterial({
+  size: 0.055, vertexColors: true, transparent: true, opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending
+}));
+scene.add(points);
+
+function resize() {
+  if (!renderer) return;
+  renderer.setPixelRatio(Math.min(2, devicePixelRatio || 1));
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.position.z = camera.aspect < 0.8 ? 11 : 8;   // pull back on tall phone screens
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize); resize();
+
+const c = new THREE.Color();
+let angle = 0, morph = 0, blinkT = 0;
+let last = performance.now(), nextLook = last + 14000 + Math.random() * 10000, nextBlink = last + 2500;
+
+function animate(now) {
+  requestAnimationFrame(animate);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!reduceMotion) hue = (hue + dt * (state === "idle" ? 6 : 14)) % 360;
+  root.style.setProperty("--hue", hue.toFixed(1));
+
+  if (state === "idle" && now > nextLook) { faceMode = !faceMode; nextLook = now + 16000 + Math.random() * 14000; }
+  morph += ((faceMode ? 1 : 0) - morph) * Math.min(1, dt * 1.6);
+  const tgt = state === "thinking" ? 1 : state === "speaking" ? 0.8 : state === "listening" ? 0.5 : 0;
+  energy += (tgt - energy) * Math.min(1, dt * 4);
+  angle += dt * (reduceMotion ? 0.04 : 0.12 + energy * 0.5);
+  // face mode turns toward the viewer so you can see it, with a gentle sway
+  const yaw = faceMode ? Math.sin(now / 1800) * 0.25 * morph : angle * (1 - morph);
+
+  if (now > nextBlink) { blinkT = 1; nextBlink = now + 2500 + Math.random() * 2500; }
+  if (blinkT > 0) blinkT = Math.max(0, blinkT - 0.08);
+
+  const pos = geo.attributes.position.array, col = geo.attributes.color.array;
+  const cs = Math.cos(yaw), sn = Math.sin(yaw);
+  for (let i = 0; i < COUNT; i++) {
+    const i3 = i * 3;
+    let fy = faceP[i3 + 1];
+    if (group[i] === 1) fy *= 1 - blinkT * 0.85;
+    else if (group[i] === 2) fy -= mouthLevel * 0.55;
+    let x = orbP[i3] + (faceP[i3] - orbP[i3]) * morph;
+    let y = orbP[i3 + 1] + (fy - orbP[i3 + 1]) * morph;
+    let z = orbP[i3 + 2] + (faceP[i3 + 2] - orbP[i3 + 2]) * morph;
+    const w = Math.sin(now / 500 + phase[i]) * (0.02 + energy * 0.05);
+    x += w; y += w * 0.6;
+    const rx = x * cs - z * sn, rz = x * sn + z * cs;
+    pos[i3] = rx; pos[i3 + 1] = y; pos[i3 + 2] = rz;
+    const depth = (rz + 2.4) / 4.8;
+    c.setHSL(((hue + y * 18 + 360) % 360) / 360, 1, Math.min(0.8, 0.4 + depth * 0.36));
+    col[i3] = c.r; col[i3 + 1] = c.g; col[i3 + 2] = c.b;
+  }
+  geo.attributes.position.needsUpdate = true; geo.attributes.color.needsUpdate = true;
+  points.scale.setScalar(1 + Math.sin(now / 900) * 0.015 + energy * Math.sin(now / 110) * 0.03);
+  key.color.setHSL(((hue + 20) % 360) / 360, 1, 0.65);
+  floor.material.color.setHSL(hue / 360, 0.6, 0.05);
+  if (renderer) renderer.render(scene, camera);
+}
+if (renderer) { loading.remove(); requestAnimationFrame(animate); }
+
+// ---------- Brain (talks to your server) ----------
+const history = [];
+const trim = () => { while (history.length > 20) history.shift(); };
+function getCode() {
+  let code = sessionStorage.getItem("michael-code");
+  if (!code) { code = prompt("Enter your access code"); if (code) sessionStorage.setItem("michael-code", code); }
+  return code || "";
+}
+async function post(signalMs) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), signalMs);
+  try {
+    return await fetch("/api/chat", {
+      method: "POST", signal: ctl.signal,
+      headers: { "Content-Type": "application/json", "x-access-code": getCode() },
+      body: JSON.stringify({ messages: history })
+    });
+  } finally { clearTimeout(t); }
+}
+async function askMichael(text) {
+  history.push({ role: "user", content: text }); trim();
+  let res;
+  try { res = await post(30000); }
+  catch (e) {                                   // one quiet retry for a flaky connection
+    await new Promise((r) => setTimeout(r, 800));
+    try { res = await post(30000); } catch (e2) { history.pop(); throw new Error(navigator.onLine ? "server" : "offline"); }
+  }
+  if (res.status === 401) { sessionStorage.removeItem("michael-code"); history.pop(); throw new Error("code"); }
+  if (res.status === 429) { history.pop(); throw new Error("rate"); }
+  if (!res.ok) { history.pop(); throw new Error("server"); }
+  const data = await res.json();
+  history.push({ role: "assistant", content: data.reply }); trim();
+  handleActions(data.actions || []);
+  return data.reply;
+}
+// Phase three hook: commands for the laptop helper will be handled here
+function handleActions(actions) { /* nothing yet */ }
+
+const ERRORS = {
+  code: "That access code was wrong. Say something again to retry.",
+  rate: "You're talking faster than I can keep up. Give me a moment.",
+  offline: "I can't reach the internet right now.",
+  server: "I couldn't reach my brain just now. Try again in a moment."
+};
+
+// ---------- Voice ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const micBtn = document.getElementById("micBtn"), hint = document.getElementById("hint");
+let listeningOn = false, paused = false, rec = null, restartTimer;
+
+function startRec() {
+  if (!listeningOn || paused || !rec) return;
+  try { rec.start(); } catch (e) {}
+  setState("listening");
+}
+function pickVoice() {
+  const v = speechSynthesis.getVoices().filter((x) => /^en/i.test(x.lang));
+  return v.find((x) => /Google|Natural|Online/i.test(x.name)) || v.find((x) => /en-US/i.test(x.lang)) || v[0] || null;
+}
+function speak(text) {
+  if (!("speechSynthesis" in window)) { paused = false; setState("idle"); startRec(); return; }
+  paused = true;
+  try { rec.stop(); } catch (e) {}
+  speechSynthesis.cancel();
+  const parts = text.match(/[^.!?]+[.!?]*/g) || [text];     // short chunks avoid Chrome cutting off long speech
+  const voice = pickVoice();
+  const done = () => { mouthLevel = 0; paused = false; setState("idle"); startRec(); };
+  parts.forEach((p, i) => {
+    const u = new SpeechSynthesisUtterance(p.trim());
+    if (voice) u.voice = voice;
+    if (i === 0) u.onstart = () => setState("speaking");
+    u.onboundary = () => { mouthLevel = 0.5 + Math.random() * 0.5; setTimeout(() => { mouthLevel *= 0.3; }, 90); };
+    if (i === parts.length - 1) { u.onend = done; u.onerror = done; }
+    speechSynthesis.speak(u);
+  });
+}
+async function handleUtterance(text) {
+  text = text.trim();
+  if (text.length < 2) return;                              // ignore stray noise
+  setState("thinking"); paused = true;
+  try { rec.stop(); } catch (e) {}
+  try { const reply = await askMichael(text); showCaption(reply); speak(reply); }
+  catch (err) { showCaption(ERRORS[err.message] || ERRORS.server); paused = false; setState("idle"); startRec(); }
+}
+
+if (SR) {
+  rec = new SR(); rec.lang = "en-US"; rec.continuous = true; rec.interimResults = false;
+  rec.onresult = (ev) => {
+    if (paused) return;
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      if (ev.results[i].isFinal) { handleUtterance(ev.results[i][0].transcript); return; }
+    }
+  };
+  rec.onerror = (ev) => {
+    if (["not-allowed", "service-not-allowed", "audio-capture"].includes(ev.error)) {
+      listeningOn = false; micBtn.setAttribute("aria-pressed", "false");
+      hint.textContent = ev.error === "audio-capture" ? "I can't find a microphone." : "Microphone is blocked. Allow it in your browser, then tap the mic.";
+    }                                                       // "no-speech" and "network" just restart below
+  };
+  rec.onend = () => { clearTimeout(restartTimer); if (listeningOn && !paused) restartTimer = setTimeout(startRec, 400); };
+  micBtn.onclick = () => {
+    listeningOn = !listeningOn; micBtn.setAttribute("aria-pressed", listeningOn);
+    if (listeningOn) { hint.textContent = "Just talk. Tap again to pause."; startRec(); }
+    else { try { rec.stop(); } catch (e) {} speechSynthesis.cancel(); paused = false; setState("idle"); hint.textContent = "Tap once, then just talk to Michael"; }
+  };
+} else {
+  micBtn.disabled = true; hint.textContent = "Voice isn't supported in this browser. Use Chrome or Edge.";
+}
+speechSynthesis.getVoices();
+</script>
+</body>
+</html>
